@@ -18,6 +18,7 @@
 # 4. Exploratory analysis.
 # 5. Build models.
 
+
 # ACQUIRE DATA --------------------------------------------------------------------------------------------------------
 
 # 1. Create an account on Zindi.
@@ -26,9 +27,8 @@
 # 4. Download the data.
 # 5. Unpack the ZIP archive into a data/ folder.
 
+
 # LIBRARIES -----------------------------------------------------------------------------------------------------------
-library(Metrics)             # Evaluating model performance
-# library(MASS)                # Stepwise Algorithm
 library(caret)               # Swiss Army Knife for ML
 
 library(readr)               # Reading CSV files
@@ -37,7 +37,6 @@ library(janitor)             # Cleaning column names
 library(ggplot2)             # Wicked plots
 library(lubridate)           # Handling date/time data
 
-# NOTE: It's important to load dplyr after MASS, otherwise MASS::select will mask dplyr::select.
 
 # LOAD DATA -----------------------------------------------------------------------------------------------------------
 PATH_TRAIN <- file.path("data", "Train.csv")
@@ -65,6 +64,7 @@ View(trips)
 # We can immediately drop the ID column since this cannot have any predictive value.
 trips <- trips %>% select(-id)
 
+
 # WRANGLE -------------------------------------------------------------------------------------------------------------
 # Create a date from the timestamp for trips to be able to join the weather data by date
 trips <- trips %>%
@@ -85,12 +85,12 @@ trips <- trips %>%
 
 
 # EDA: PLOTS ----------------------------------------------------------------------------------------------------------
-# ETA compared to trip distance - there is a linear relationship
+# ETA compared to trip distance - there could be a linear relationship
 ggplot(trips, aes(x = trip_distance, y = eta)) +
   geom_point(alpha = 0.1) +
   labs(x = "Trip distance (m)", y = "ETA (seconds)")
 
-# Distribution of eta
+# Distribution of eta - is it normally distributed?
 ggplot(trips, aes(x = eta)) +
   geom_histogram()
 
@@ -142,27 +142,18 @@ nrow(train)
 nrow(test)
 
 
-# MODEL KNN -----------------------------------------------------------------------------------------------------------
-# We’ll kick off by looking at something that is not a linear model: k-Nearest Neighbours (kNN). 
-# The principle is simple: assign a value derived from a collection of “nearby” observations.
-# This technique is very flexible (it works well for both classification and regression problems).
-library(kknn)
-
-trips_knn <- kknn(eta ~ .,
-                  train, test, k = 7, kernel = "optimal")
-
-# Calculate the RMSE.
-rmse(test$eta, predict(trips_knn))
-
-
-# MODEL LM ------------------------------------------------------------------------------------------------------------
-# We then look at simple linear regression model. And just throw everything in - the "kitchen sink" approach.
-trips_lm <- lm(eta ~ trip_distance + time_of_day +
-                 # Weather data 
-                 dewpoint_2m_temperature + maximum_2m_air_temperature + mean_2m_air_temperature +
-                 mean_sea_level_pressure + minimum_2m_air_temperature + surface_pressure +
-                 total_precipitation + u_component_of_wind_10m + v_component_of_wind_10m,
-                 data = train)
+# MODEL: LM ------------------------------------------------------------------------------------------------------------
+# We’ll kick off by looking at a simple linear regression model. And just throw (almost) everything in - the "kitchen sink" approach.
+trips_lm <- lm(eta ~ 
+               origin_lat + origin_lon +
+               destination_lat + destination_lon +
+               trip_distance + 
+               time_of_day +
+               # Weather data 
+               dewpoint_2m_temperature + maximum_2m_air_temperature + mean_2m_air_temperature +
+               mean_sea_level_pressure + minimum_2m_air_temperature + surface_pressure +
+               total_precipitation + u_component_of_wind_10m + v_component_of_wind_10m,
+               data = train)
 
 summary(trips_lm)
 
@@ -184,8 +175,148 @@ head(test$eta)
 # Calculate the RMSE.
 rmse(test$eta, test_predictions)
 
-# This is a rather large RMSE. It's also larger than our k-Nearest Neighbours model.
+# This is a rather large RMSE. 
 
 
+# MODEL: KNN -----------------------------------------------------------------------------------------------------------
+# Next, we look at another technique which is not a linear model but simple and powerful for regression: 
+# k-Nearest Neighbours (kNN). 
+# The principle is simple: assign a value derived from a collection of “nearby” observations.
+# This technique is very flexible (it works well for both classification and regression problems).
+library(kknn)
+
+trips_knn <- kknn(eta ~
+                    origin_lat + origin_lon +
+                    destination_lat + destination_lon +
+                    trip_distance + 
+                    time_of_day +
+                    # Weather data 
+                    dewpoint_2m_temperature + maximum_2m_air_temperature + mean_2m_air_temperature +
+                    mean_sea_level_pressure + minimum_2m_air_temperature + surface_pressure +
+                    total_precipitation + u_component_of_wind_10m + v_component_of_wind_10m,
+                  train, test, k = 7, kernel = "optimal") 
+
+# Calculate the RMSE.
+rmse(test$eta, predict(trips_knn))
+
+# This is an improvement on the lm model.
+
+# MODEL: CARET / DECISION TREE ----------------------------------------------------------------------------------------
+
+# Next, let's try a decision tree using caret.
+trips_rpart <-  train(eta ~
+                        origin_lat + origin_lon +
+                        destination_lat + destination_lon +
+                        trip_distance + 
+                        time_of_day +
+                        # Weather data 
+                        dewpoint_2m_temperature + maximum_2m_air_temperature + mean_2m_air_temperature +
+                        mean_sea_level_pressure + minimum_2m_air_temperature + surface_pressure +
+                        total_precipitation + u_component_of_wind_10m + v_component_of_wind_10m,
+                    data = train, method = "rpart",
+                    trControl = trainControl("cv", number = 10),
+                    tuneLength = 10
+)
+
+trips_rpart
+
+test_predictions <- predict(trips_rpart, test)
+
+rmse(test$eta, test_predictions)
+
+# The RMSE is still large. A potential problem is over fitting.
+
+
+# MODEL: RANDOM FORESTS --------------------------------------------------------------------------------------------
+# Random forests improve predictive accuracy by generating a large number of bootstrapped trees 
+# (based on random samples of variables), classifying a case using each tree in this new "forest",
+# and deciding a final predicted outcome by combining the results across all of the trees (an average in 
+# regression, as we are doing here).
+library(randomForest)
+
+# This will take a little longer to run!
+trips_rf <- randomForest(eta ~
+                           origin_lat + origin_lon +
+                           destination_lat + destination_lon +
+                           trip_distance + 
+                           time_of_day +
+                           # Weather data 
+                           dewpoint_2m_temperature + maximum_2m_air_temperature + mean_2m_air_temperature +
+                           mean_sea_level_pressure + minimum_2m_air_temperature + surface_pressure +
+                           total_precipitation + u_component_of_wind_10m + v_component_of_wind_10m,
+                         data = train)
+
+test_predictions <- predict(trips_rf, test)
+
+rmse(test$eta, test_predictions)
+
+
+# MODEL: BOOSTING ------------------------------------------------------------------------------------------------
+# Boosting is another approach to improve the predictions resulting from a decision tree.
+# In the Random Forests bagging approach, each tree is built upon a bootstrapped data set, independent of other
+# trees, and then combined to build a single model. In boosting, each tree is built sequentially so that 
+# each one is grown using information from the previous. 
+#
+# Let's try it out with our data!
+library(gbm)
+
+trips_boost = gbm(eta ~
+                    origin_lat + origin_lon +
+                    destination_lat + destination_lon +
+                    trip_distance + 
+                    time_of_day +
+                    # Weather data 
+                    dewpoint_2m_temperature + maximum_2m_air_temperature + mean_2m_air_temperature +
+                    mean_sea_level_pressure + minimum_2m_air_temperature + surface_pressure +
+                    total_precipitation + u_component_of_wind_10m + v_component_of_wind_10m, 
+                  data = train, distribution = "gaussian", 
+                  n.trees = 10000, shrinkage = 0.01, interaction.depth = 4)
+
+test_predictions <- predict(trips_boost, test, n.trees = 10000)
+
+rmse(test$eta, test_predictions)
+
+
+# NEXT STEPS ----------------------------------------------------------------------------------
+
+# Each of the above models can be improved. These provide a starting point. 
+#
+# For example, they can be improved through:
+#   - Feature selection (are all variables needed or necessary?)
+#   - Feature engineering (can you create new variables that have strong predictive power? Perhaps
+#     interactions between different weather metrics, ie. maybe if there is strong wind and precipitation
+#     on a day. How can ou create a variable to combine this and test this hypothesis)
+#   - Parameter tuning (this is particularly relevant for the last models which have many parameters 
+#     which can be further tuned)
+
+
+# SUBMISSION ----------------------------------------------------------------------------------
+
+# Once you have your final model you are happy with, the nest step is to make predictions on the unseen
+# testing set.
+
+# We will call this unseen data test_final to distinguish from the testing data used during model building and training.
+
+# Read in the final test data
+test_final <- read_csv(PATH_TEST) %>% clean_names()
+
+# Perform the same data preparation steps as was done during training
+test_final <- test_final %>%
+  mutate(date = as.Date(timestamp)) %>% 
+  mutate(time_of_day = lubridate::hour(timestamp)) %>%
+  left_join(weather, by = "date")
+
+# Make predictions using your final model. We will use the Random Forest model for demonstration purposes here.
+final_predictions <- predict(trips_rf, test_final)
+
+final_predictions <- as.data.frame(final_predictions)
+
+# Create the submission file
+submission <- test_final %>%
+  bind_cols(final_predictions) %>%
+  select(ID = id, ETA = final_predictions)
+
+# Write as csv
+write_csv(submission, "data/submission_yassir.csv")
 
 
